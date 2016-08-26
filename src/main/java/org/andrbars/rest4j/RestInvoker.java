@@ -1,30 +1,24 @@
 package org.andrbars.rest4j;
 
-import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.reflect.Type;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.URL;
+import java.util.Collection;
 import java.util.Map;
-
+import java.util.Map.Entry;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import java.io.ByteArrayOutputStream;
-import java.io.OutputStream;
-import java.lang.reflect.InvocationTargetException;
-import java.util.Collection;
-import java.util.Map.Entry;
 import javax.ws.rs.core.MediaType;
 
 class RestInvoker
 {
 
-	private final ObjectMapper mapper;
+	private static final ObjectMapper mapper = new ObjectMapper();
 
 	private String serviceUrl;
 
@@ -34,34 +28,16 @@ class RestInvoker
 	private SSLContext sslContext = null;
 	private HostnameVerifier hostNameVerifier = null;
 
-	private static String readString(InputStream inputStream)
-	{
-		if (inputStream == null)
-		{
-			return "";
-		}
-
-		try
-		{
-			ByteArrayOutputStream result = new ByteArrayOutputStream();
-			byte[] buffer = new byte[1024];
-			int length;
-			while ((length = inputStream.read(buffer)) != -1)
-			{
-				result.write(buffer, 0, length);
-			}
-			return result.toString("UTF-8");
-		}
-		catch (IOException ex)
-		{
-			return "";
-		}
-	}
-
 	public RestInvoker(String serviceUrl)
 	{
-		this.mapper = new ObjectMapper();
-		setServiceUrl(serviceUrl);
+		if (serviceUrl == null)
+		{
+			throw new IllegalArgumentException("Argument serviceUrl must be defined.");
+		}
+
+		this.serviceUrl = serviceUrl.endsWith("/")
+			? serviceUrl = serviceUrl.substring(0, serviceUrl.length() - 1)
+			: serviceUrl;
 	}
 
 	public Object invoke(InvokeParams params)
@@ -83,40 +59,16 @@ class RestInvoker
 		{
 			try (InputStream ips = con.getInputStream())
 			{
-				System.out.println("HTTP response code = " + con.getResponseCode());
-				return readResponse(params.getReturnType(), ips);
+				return Utils.readResponse(params.getReturnType(), ips, mapper);
 			}
 		}
 		catch (IOException e)
 		{
 			try (InputStream stream = con.getErrorStream())
 			{
-				String message = readString(stream);
-				throw getRemoteException(message);
+				String message = Utils.readString(stream);
+				throw Utils.getRemoteException(message, mapper);
 			}
-		}
-	}
-
-	private Object readResponse(Type returnType, InputStream ips)
-		throws Throwable
-	{
-		if (returnType == null)
-		{
-			return null;
-		}
-
-		String response = readString(ips);
-
-		System.out.println("response -> " + response);
-
-		try
-		{
-			JavaType type = mapper.getTypeFactory().constructType(returnType);
-			return mapper.readValue(response, type);
-		}
-		catch (Exception exc)
-		{
-			throw getRemoteException(response);
 		}
 	}
 
@@ -124,7 +76,6 @@ class RestInvoker
 		throws IOException
 	{
 		String path = serviceUrl + "/" + params.getParametrizedPath();
-		System.out.println("path -> " + path);
 		URL url = new URL(path);
 
 		HttpURLConnection con = (HttpURLConnection)url.openConnection(connectionProxy);
@@ -168,31 +119,6 @@ class RestInvoker
 		}
 
 		return con;
-	}
-
-	private Throwable getRemoteException(String message)
-	{
-		Throwable exception;
-
-		try
-		{
-			ExceptionInfo exceptionInfo = mapper.readValue(message, ExceptionInfo.class);
-			try
-			{
-				exception = exceptionInfo.constructException();
-			}
-			catch (ClassNotFoundException | InstantiationException | IllegalAccessException | NoSuchMethodException | IllegalArgumentException | InvocationTargetException exc3)
-			{
-				exception = new RuntimeException("Ошибка создания исключения " + exceptionInfo,
-					exc3);
-			}
-		}
-		catch (Exception exc1)
-		{
-			exception = new RuntimeException("Ошибка при чтении исключения", exc1);
-		}
-
-		return exception;
 	}
 
 	private void internalCreateRequest(InvokeParams params, OutputStream ops)
@@ -263,64 +189,4 @@ class RestInvoker
 			mapper.writeValue(ops, arguments);
 		}
 	}
-
-	public String getServiceUrl()
-	{
-		return serviceUrl;
-	}
-
-	public final void setServiceUrl(String serviceUrl)
-	{
-		if ((serviceUrl != null) && serviceUrl.endsWith("/"))
-		{
-			serviceUrl = serviceUrl.substring(0, serviceUrl.length() - 1);
-		}
-		this.serviceUrl = serviceUrl;
-	}
-
-	public Proxy getConnectionProxy()
-	{
-		return connectionProxy;
-	}
-
-	public void setConnectionProxy(Proxy connectionProxy)
-	{
-		this.connectionProxy = connectionProxy;
-	}
-
-	public int getConnectionTimeoutMillis()
-	{
-		return connectionTimeoutMillis;
-	}
-
-	public void setConnectionTimeoutMillis(int connectionTimeoutMillis)
-	{
-		this.connectionTimeoutMillis = connectionTimeoutMillis;
-	}
-
-	public int getReadTimeoutMillis()
-	{
-		return readTimeoutMillis;
-	}
-
-	public void setReadTimeoutMillis(int readTimeoutMillis)
-	{
-		this.readTimeoutMillis = readTimeoutMillis;
-	}
-
-	public void setSslContext(SSLContext sslContext)
-	{
-		this.sslContext = sslContext;
-	}
-
-	public void setHostNameVerifier(HostnameVerifier hostNameVerifier)
-	{
-		this.hostNameVerifier = hostNameVerifier;
-	}
-
-	public ObjectMapper getObjectMapper()
-	{
-		return mapper;
-	}
-
 }

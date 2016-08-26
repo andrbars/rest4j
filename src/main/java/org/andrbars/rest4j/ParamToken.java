@@ -1,6 +1,6 @@
 package org.andrbars.rest4j;
 
-public class ParamToken
+class ParamToken
 {
 
 	public static final ParamToken empty = new ParamToken(0, 0, "");

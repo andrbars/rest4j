@@ -63,7 +63,12 @@ public class ExceptionInfo implements Serializable
 	@Override
 	public String toString()
 	{
-		return "ExceptionInfo{" + "statusCode=" + statusCode + ", exceptionType=" + exceptionType + ", requestUri=" + requestUri + ", servletName=" + servletName + ", message=" + message + '}';
+		return "ExceptionInfo{"
+			+ "statusCode=" + statusCode
+			+ ", exceptionType=" + exceptionType
+			+ ", requestUri=" + requestUri
+			+ ", servletName=" + servletName
+			+ ", message=" + message + '}';
 	}
 
 }

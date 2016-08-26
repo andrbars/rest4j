@@ -1,20 +1,13 @@
 package org.andrbars.rest4j;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
-import com.fasterxml.jackson.databind.util.StdDateFormat;
-import java.io.UnsupportedEncodingException;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
-import java.net.URLEncoder;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.TimeZone;
 import javax.ws.rs.CookieParam;
 import javax.ws.rs.DELETE;
 import javax.ws.rs.FormParam;
@@ -26,11 +19,13 @@ import javax.ws.rs.PUT;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.QueryParam;
+import org.andrbars.rest4j.MethodParam.ParamType;
 
-public class InvokeParams
+class InvokeParams
 {
 
 	private static final List<Class> httpMethodAnnotations;
+	private static final Map<Method, List<MethodParam>> methodParamsCache;
 
 	static
 	{
@@ -44,13 +39,23 @@ public class InvokeParams
 			}
 		};
 
+		methodParamsCache = new HashMap<>();
 	}
 
 	private final Object[] arguments;
 	private final Method method;
+	private final List<MethodParam> methodParams;
 
 	private String methodName;
+	private String httpMethod;
 	private String path;
+
+	private String parametrizedPath;
+	private String queryParams;
+	private String matrixParams;
+	private String cookieParams;
+	private String formParams;
+	private Map<String, String> headerParams;
 
 	public InvokeParams(Object[] arguments, Method method)
 	{
@@ -60,6 +65,75 @@ public class InvokeParams
 			{
 			};
 		this.method = method;
+		this.methodParams = parse();
+	}
+
+	private List<MethodParam> parse()
+	{
+		List<MethodParam> result = methodParamsCache.get(method);
+		if (result != null)
+		{
+			return result;
+		}
+
+		result = new ArrayList<>();
+
+		Annotation[][] annotations = method.getParameterAnnotations();
+		for (Annotation[] annotation: annotations)
+		{
+			String name = null;
+			ParamType type = null;
+			JsonFormat.Value format = null;
+			String paramPath = null;
+
+			for (Annotation item: annotation)
+			{
+				Class<? extends Annotation> t = item.annotationType();
+				if (t == QueryParam.class)
+				{
+					QueryParam param = (QueryParam)item;
+					name = param.value();
+					type = ParamType.QueryParam;
+				}
+				else if (t == MatrixParam.class)
+				{
+					MatrixParam param = (MatrixParam)item;
+					name = param.value();
+					type = ParamType.MatrixParam;
+				}
+				else if (t == CookieParam.class)
+				{
+					CookieParam param = (CookieParam)item;
+					name = param.value();
+					type = ParamType.CookieParam;
+				}
+				else if (t == HeaderParam.class)
+				{
+					HeaderParam param = (HeaderParam)item;
+					name = param.value();
+					type = ParamType.HeaderParam;
+				}
+				else if (t == FormParam.class)
+				{
+					FormParam param = (FormParam)item;
+					name = param.value();
+					type = ParamType.FormParam;
+				}
+				else if (t == JsonFormat.class)
+				{
+					format = new JsonFormat.Value((JsonFormat)item);
+				}
+				else if (t == PathParam.class)
+				{
+					PathParam pathParam = (PathParam)item;
+					paramPath = pathParam.value();
+				}
+			}
+			result.add(new MethodParam(name, paramPath, type, format));
+		}
+
+		methodParamsCache.put(method, result);
+		return result;
 	}
 
 	public String getMethodName()
@@ -79,20 +153,27 @@ public class InvokeParams
 
 	public String getHttpMethod()
 	{
+		if (httpMethod != null)
+		{
+			return httpMethod;
+		}
+
+		httpMethod = "";
 		for (Class clazz: httpMethodAnnotations)
 		{
 			if (method.getAnnotation(clazz) != null)
 			{
-				return clazz.getSimpleName();
+				httpMethod = clazz.getSimpleName();
+				break;
 			}
 		}
-		return "";
+		return httpMethod;
 	}
 
 	public boolean isRequestWithBody()
 	{
-		String httpMethod = getHttpMethod();
-		return "POST".equals(httpMethod) || "PUT".equals(httpMethod);
+		String hm = getHttpMethod();
+		return "POST".equals(hm) || "PUT".equals(hm);
 	}
 
 	public String getPath()
@@ -112,8 +193,6 @@ public class InvokeParams
 		return path;
 	}
 
-	private String queryParams;
-
 	private String getQueryParams()
 	{
 		if (queryParams != null)
@@ -121,41 +200,9 @@ public class InvokeParams
 			return queryParams;
 		}
 
-		queryParams = "";
-
-		boolean hasQueryParam = false;
-		Annotation[][] annotations = method.getParameterAnnotations();
-		for (int i = 0; i < annotations.length; i++)
-		{
-			Annotation[] a = annotations[i];
-			for (Annotation item: a)
-			{
-				if (item.annotationType() == QueryParam.class)
-				{
-					QueryParam queryParam = (QueryParam)item;
-					queryParams += hasQueryParam
-						? "&"
-						: "";
-					try
-					{
-						queryParams += queryParam.value() + "="
-							+ (arguments[i] == null
-								? ""
-								: URLEncoder.encode(format(arguments[i], a), "UTF-8"));
-					}
-					catch (UnsupportedEncodingException ex)
-					{
-						throw new RuntimeException(ex);
-					}
-					hasQueryParam = true;
-				}
-			}
-		}
-
+		queryParams = paramsChain(ParamType.QueryParam, "&");
 		return queryParams;
 	}
-
-	private String matrixParams;
 
 	private String getMatrixParams()
 	{
@@ -164,41 +211,42 @@ public class InvokeParams
 			return matrixParams;
 		}
 
-		matrixParams = "";
-
-		boolean hasMatrixParam = false;
-		Annotation[][] annotations = method.getParameterAnnotations();
-		for (int i = 0; i < annotations.length; i++)
-		{
-			Annotation[] a = annotations[i];
-			for (Annotation item: a)
-			{
-				if (item.annotationType() == MatrixParam.class)
-				{
-					MatrixParam matrixParam = (MatrixParam)item;
-					matrixParams += hasMatrixParam
-						? ";"
-						: "";
-					try
-					{
-						matrixParams += matrixParam.value() + "="
-							+ (arguments[i] == null
-								? ""
-								: URLEncoder.encode(format(arguments[i], a), "UTF-8"));
-					}
-					catch (UnsupportedEncodingException ex)
-					{
-						throw new RuntimeException(ex);
-					}
-					hasMatrixParam = true;
-				}
-			}
-		}
-
+		matrixParams = paramsChain(ParamType.MatrixParam, ";");
 		return matrixParams;
 	}
 
-	private String parametrizedPath;
+	public String getCookieParams()
+	{
+		if (cookieParams != null)
+		{
+			return cookieParams;
+		}
+
+		cookieParams = paramsChain(ParamType.CookieParam, ";");
+		return cookieParams;
+	}
+
+	public Map<String, String> getHeaderParams()
+	{
+		if (headerParams != null)
+		{
+			return headerParams;
+		}
+
+		headerParams = paramsMap(ParamType.HeaderParam);
+		return headerParams;
+	}
+
+	public String getFormParams()
+	{
+		if (formParams != null)
+		{
+			return formParams;
+		}
+
+		formParams = paramsChain(ParamType.FormParam, "&");
+		return formParams;
+	}
 
 	public String getParametrizedPath()
 	{
@@ -208,32 +256,29 @@ public class InvokeParams
 		}
 
 		parametrizedPath = getPath();
-
-		Annotation[][] annotations = method.getParameterAnnotations();
-		for (int i = 0; i < annotations.length; i++)
+		for (int i = 0; i < methodParams.size(); i++)
 		{
-			Annotation[] a = annotations[i];
-			for (Annotation item: a)
+			MethodParam methodParam = methodParams.get(i);
+			String p = methodParam.getPath();
+			if (p == null)
 			{
-				if (item.annotationType() == PathParam.class)
-				{
-					PathParam pathParam = (PathParam)item;
-					ParamToken token = ParamToken.parse(parametrizedPath, 0);// оптимизировать с использованием кэшей, т.к. PathParam и Annotation не изменяется на этапе выполнения, то достаточно парсить один раз
-					while (token != ParamToken.empty)
-					{
-						if (pathParam.value().equals(token.getName()))
-						{
-							String val = arguments[i] == null
-								? ""
-								: arguments[i].toString();
+				continue;
+			}
 
-							parametrizedPath = parametrizedPath.substring(0, token.getFirst())
-								+ val
-								+ parametrizedPath.substring(token.getLast() + 1);
-						}
-						token = ParamToken.parse(parametrizedPath, token.getLast());
-					}
+			ParamToken token = ParamToken.parse(parametrizedPath, 0);// оптимизировать с использованием кэшей, т.к. PathParam и Annotation не изменяется на этапе выполнения, то достаточно парсить один раз
+			while (token != ParamToken.empty)
+			{
+				if (p.equals(token.getName()))
+				{
+					String val = arguments[i] == null
+						? ""
+						: arguments[i].toString();
+
+					parametrizedPath = parametrizedPath.substring(0, token.getFirst())
+						+ val
+						+ parametrizedPath.substring(token.getLast() + 1);
 				}
+				token = ParamToken.parse(parametrizedPath, token.getLast());
 			}
 		}
 
@@ -254,161 +299,45 @@ public class InvokeParams
 		return parametrizedPath;
 	}
 
-	private String cookieParams;
-
-	public String getCookieParams()
-	{
-		if (cookieParams != null)
-		{
-			return cookieParams;
-		}
-
-		cookieParams = "";
-
-		boolean hasCookieParam = false;
-		Annotation[][] annotations = method.getParameterAnnotations();
-		for (int i = 0; i < annotations.length; i++)
-		{
-			Annotation[] a = annotations[i];
-			for (Annotation item: a)
-			{
-				if (item.annotationType() == CookieParam.class)
-				{
-					CookieParam cookieParam = (CookieParam)item;
-					cookieParams += hasCookieParam
-						? ";"
-						: "";
-					cookieParams += cookieParam.value() + "=" + format(arguments[i], a);
-
-					hasCookieParam = true;
-				}
-			}
-		}
-
-		return cookieParams;
-	}
-
-	private Map<String, String> headerParams;
-
-	public Map<String, String> getHeaderParams()
-	{
-		if (headerParams != null)
-		{
-			return headerParams;
-		}
-
-		headerParams = new HashMap<>();
-
-		Annotation[][] annotations = method.getParameterAnnotations();
-		for (int i = 0; i < annotations.length; i++)
-		{
-			Annotation[] a = annotations[i];
-			for (Annotation item: a)
-			{
-				if (item.annotationType() == HeaderParam.class)
-				{
-					HeaderParam headerParam = (HeaderParam)item;
-					headerParams.put(headerParam.value(), format(arguments[i], a));
-				}
-			}
-		}
-
-		return headerParams;
-	}
-
-	private String formParams;
-
-	public String getFormParams()
-	{
-		if (formParams != null)
-		{
-			return formParams;
-		}
-
-		formParams = "";
-
-		boolean hasFormParam = false;
-		Annotation[][] annotations = method.getParameterAnnotations();
-		for (int i = 0; i < annotations.length; i++)
-		{
-			Annotation[] a = annotations[i];
-			for (Annotation item: a)
-			{
-				if (item.annotationType() == FormParam.class)
-				{
-					FormParam formParam = (FormParam)item;
-					formParams += hasFormParam
-						? "&"
-						: "";
-					try
-					{
-						formParams += formParam.value() + "="
-							+ (arguments[i] == null
-								? ""
-								: URLEncoder.encode(format(arguments[i], a), "UTF-8"));
-					}
-					catch (UnsupportedEncodingException ex)
-					{
-						throw new RuntimeException(ex);
-					}
-					hasFormParam = true;
-				}
-			}
-		}
-
-		return formParams;
-	}
-
 	public Object[] getArguments()
 	{
 		return arguments;
 	}
 
-	private String format(Object value, Annotation[] annotations)
+	private Map<String, String> paramsMap(ParamType type)
 	{
-		if (value == null)
-		{
-			return "";
-		}
+		Map<String, String> result = new HashMap<>();
 
-		if (value.getClass() == Date.class)
+		for (int i = 0; i < methodParams.size(); i++)
 		{
-			for (Annotation annotation: annotations)
+			MethodParam methodParam = methodParams.get(i);
+			if (methodParam.getType() == type)
 			{
-				if (annotation.annotationType() == JsonFormat.class)
-				{
-					JsonFormat.Value format = new JsonFormat.Value((JsonFormat)annotation);
-
-					JsonFormat.Shape shape = format.getShape();
-					if (shape.isNumeric())
-					{
-						return Long.toString(((Date)value).getTime());
-					}
-					else if ((shape == JsonFormat.Shape.STRING) || format.hasPattern()
-						|| format.hasLocale() || format.hasTimeZone())
-					{
-						TimeZone tz = format.getTimeZone();
-						final String pattern = format.hasPattern()
-							? format.getPattern()
-							: StdDateFormat.DATE_FORMAT_STR_ISO8601;
-						final Locale loc = format.hasLocale()
-							? format.getLocale()
-							: Locale.getDefault();
-						SimpleDateFormat df = new SimpleDateFormat(pattern, loc);
-						if (tz == null)
-						{
-							tz = TimeZone.getTimeZone("GMT");
-						}
-						df.setTimeZone(tz);
-						return df.format((Date)value);
-					}
-
-					return value.toString();
-				}
+				result.put(methodParam.getName(), methodParam.get(arguments[i]));
 			}
 		}
 
-		return value.toString();
+		return result;
 	}
 
+	private String paramsChain(ParamType type, String splitter)
+	{
+		String result = "";
+
+		boolean hasParam = false;
+		for (int i = 0; i < methodParams.size(); i++)
+		{
+			MethodParam methodParam = methodParams.get(i);
+			if (methodParam.getType() == type)
+			{
+				result += hasParam
+					? splitter
+					: "";
+				result += methodParam.getName() + "=" + methodParam.get(arguments[i]);
+				hasParam = true;
+			}
+		}
+
+		return result;
+	}
 }
